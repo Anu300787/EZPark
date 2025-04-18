@@ -1,4 +1,4 @@
-# SmartPark
+# EZPark
 
 A React application for finding and reserving parking spaces in malls.
 
