@@ -1,0 +1,135 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+#include <time.h>
+
+// WiFi credentials
+const char* ssid = "Maiesha Mehra";
+const char* password = "maiesha27";
+
+// Sensor pins for NodeMCU v3
+#define TRIG_PIN D1  // GPIO5
+#define ECHO_PIN D2  // GPIO4
+#define IR_SENSOR_PIN A0  // Only analog pin on ESP8266
+
+// Server on port 80
+ESP8266WebServer server(80);
+
+// Time and status tracking
+bool carPresent = false;
+unsigned long entryTime = 0;
+unsigned long exitTime = 0;
+float parkingFee = 0.0;
+
+// Distance threshold (in cm)
+const float thresholdCM = 150.0;
+
+// Get formatted current time
+String getTimeString() {
+  time_t now = time(nullptr);
+  struct tm* timeinfo = localtime(&now);
+  char buffer[30];
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", timeinfo);
+  return String(buffer);
+}
+
+// Convert milliseconds to hours (rounded to minutes)
+float millisToHours(unsigned long ms) {
+  return round((ms / 1000.0 / 60.0) * 100.0) / 100.0 / 60.0;
+}
+
+// Map IR analog value to approximate distance
+float mapIRtoDistance(int value) {
+  float a = 50000.0;
+  float b = 20.0;
+  float c = -10.0;
+  if (value <= b) return 150.0;
+  float dist = a / (value - b) + c;
+  if (dist > 150.0) dist = 150.0;
+  if (dist < 0) dist = 0;
+  return dist;
+}
+
+// Read ultrasonic distance in cm
+float getUltrasonicDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long duration = pulseIn(ECHO_PIN, HIGH);
+  return duration * 0.034 / 2;
+}
+
+// Web handler
+void handleRoot() {
+  String html = "<html><head><meta http-equiv='refresh' content='2'><title>Smart Parking</title></head><body>";
+  html += "<h2>🚗 ESP8266 Smart Parking System</h2>";
+
+  int irValue = analogRead(IR_SENSOR_PIN);
+  float irDistance = mapIRtoDistance(irValue);
+  float ultrasonicDistance = getUltrasonicDistance();
+
+  html += "<p><strong>IR Sensor Value:</strong> " + String(irValue) + "</p>";
+  html += "<p><strong>IR Approx Distance:</strong> " + String(irDistance) + " cm</p>";
+  html += "<p><strong>Ultrasonic Distance:</strong> " + String(ultrasonicDistance) + " cm</p>";
+
+  if (irDistance < thresholdCM || ultrasonicDistance < thresholdCM) {
+    html += "<h3 style='color:green;'>✅ Car is Parked</h3>";
+    if (!carPresent) {
+      entryTime = millis();
+      carPresent = true;
+    }
+    html += "<p><strong>Entry Time:</strong> " + getTimeString() + "</p>";
+  } else {
+    if (carPresent) {
+      exitTime = millis();
+      unsigned long duration = exitTime - entryTime;
+      float hours = millisToHours(duration);
+      parkingFee = hours * 10.0;
+      carPresent = false;
+    }
+    html += "<h3 style='color:red;'>🚫 No Car Detected</h3>";
+    if (exitTime > 0) {
+      html += "<p><strong>Exit Time:</strong> " + getTimeString() + "</p>";
+      html += "<p><strong>Duration:</strong> " + String(millisToHours(exitTime - entryTime), 2) + " hours</p>";
+      html += "<p><strong>Fee:</strong> ₹" + String(parkingFee, 2) + "</p>";
+    }
+  }
+
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+// Setup
+void setup() {
+  Serial.begin(115200);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+
+  // Web server
+  server.on("/", handleRoot);
+  server.begin();
+
+  // Time sync (IST = GMT+5:30 = 19800 seconds)
+  configTime(19800, 0, "pool.ntp.org");
+  Serial.print("Syncing time");
+  while (time(nullptr) < 100000) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nTime synced!");
+}
+
+// Loop
+void loop() {
+  server.handleClient();
+}
